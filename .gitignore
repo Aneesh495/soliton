@@ -1,0 +1,26 @@
+# Build outputs
+bin/
+obj/
+*.o
+*.a
+*.so
+*.dylib
+*.out
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+env/
+
+# Data artifacts
+data/hdb/
+data/tp.log
+data/*.csv
+data/*.dat
+
+# OS artifacts
+.DS_Store
+Thumbs.db
