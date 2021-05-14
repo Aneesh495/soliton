@@ -2,6 +2,8 @@
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
 #include "soliton/q.h"
 #include "soliton/eval.h"
 #include "soliton/ipc.h"
