@@ -239,4 +239,147 @@ qr: {[A]
   `Q`R!(Q; R)
  };
 
+/ Symmetric eigenvalue problem via QR algorithm with Rayleigh quotient shifts
+/ Returns dictionary: `values`vectors
+eigSym: {[A; max_iter]
+  n: count A;
+  V: eye[n];
+  T: A;
+  iter: 0;
+  max_it: $[max_iter < 10; 80; max_iter];
+  
+  while[iter < max_it;
+    / Rayleigh shift from bottom 2x2 corner
+    d1: T[n - 1; n - 1];
+    d0: T[n - 2; n - 2];
+    b: T[n - 1; n - 2];
+    tr: d0 + d1;
+    dt: (d0 * d1) - (b * b);
+    disc: sqrt[max (0f; (0.25 * tr * tr) - dt)];
+    lambda1: (0.5 * tr) + disc;
+    lambda2: (0.5 * tr) - disc;
+    shift: $[abs[lambda1 - d1] < abs[lambda2 - d1]; lambda1; lambda2];
+    
+    / Shifted QR decomposition: T - shift * I = Q * R
+    T_shifted: T;
+    i: 0;
+    while[i < n;
+      T_shifted[i; i]: T_shifted[i; i] - shift;
+      i: i + 1
+    ];
+    qr_res: qr[T_shifted];
+    Q: qr_res`Q;
+    R: qr_res`R;
+    
+    / Reconstruct shifted matrix: T = R * Q + shift * I
+    T_next: matMul[R; Q];
+    i: 0;
+    while[i < n;
+      T_next[i; i]: T_next[i; i] + shift;
+      i: i + 1
+    ];
+    T: T_next;
+    V: matMul[V; Q];
+    
+    / Check off-diagonal convergence
+    off_diag: 0f;
+    r: 0;
+    while[r < n;
+      c: 0;
+      while[c < r;
+        off_diag: off_diag + abs[T[r; c]];
+        c: c + 1
+      ];
+      r: r + 1
+    ];
+    if[off_diag < 1e-12; iter: 9999];
+    iter: iter + 1
+  ];
+  
+  vals: diag[T];
+  / Sort eigenvalues and eigenvectors in descending order
+  order: idesc vals;
+  `values`vectors!(vals[order]; flip {flip[V][x]} each order)
+ };
+
+/ Singular Value Decomposition: A = U * S * V^T
+/ Computed via symmetric eigen-decomposition of A^T * A and A * A^T
+/ Returns dictionary: `U`S`V
+svd: {[A]
+  m: count A;
+  n: count first A;
+  At: flip A;
+  AtA: matMul[At; A];
+  
+  eig_v: eigSym[AtA; 100];
+  v_vals: eig_v`values;
+  V: eig_v`vectors;
+  
+  / Singular values are square roots of eigenvalues of A^T * A
+  s_vals: sqrt[max'[v_vals; 0f]];
+  
+  / Compute left singular vectors U_k = (1 / s_k) * A * V_k
+  U_cols: ();
+  k: 0;
+  while[k < count s_vals;
+    s: s_vals[k];
+    v_col: {V[x; k]} each til n;
+    u_col: $[s > 1e-14; matVec[A; v_col] % s; m # 0f];
+    U_cols: U_cols, enlist u_col;
+    k: k + 1
+  ];
+  U: flip U_cols;
+  `U`S`V!(U; s_vals; V)
+ };
+
+/ Moore-Penrose pseudoinverse via SVD with thresholding
+pinv: {[A]
+  s_res: svd[A];
+  U: s_res`U;
+  S: s_res`S;
+  V: s_res`V;
+  
+  max_s: max S;
+  tol: 1e-14 * max_s;
+  
+  S_inv: {?[x > tol; 1f % x; 0f]} each S;
+  diag_S_inv: diagMat[S_inv];
+  
+  / A^+ = V * S^+ * U^T
+  matMul[matMul[V; diag_S_inv]; flip U]
+ };
+
+/ Levinson-Durbin algorithm for symmetric Toeplitz system T * x = y
+/ Time complexity: O(n^2) instead of O(n^3)
+/ r: autocovariance vector [r0, r1, ..., r_{n-1}] defining Toeplitz rows
+/ y: right hand side vector
+levinsonDurbin: {[r; y]
+  n: count y;
+  if[n == 1; :enlist (y[0] % r[0])];
+  
+  a: enlist (neg r[1] % r[0]);
+  e: r[0] * (1f - (a[0] * a[0]));
+  
+  f: enlist (y[0] % r[0]);
+  
+  k: 1;
+  while[k < n;
+    / Compute reflection coefficient
+    q: r[k + 1] + sum r[1 + til k] * reverse a;
+    refl: neg q % e;
+    
+    a_new: a + (refl * reverse a);
+    a: a_new, enlist refl;
+    e: e * (1f - (refl * refl));
+    
+    / Update solution vector f
+    gamma: (y[k] - sum r[1 + til k] * reverse f) % e;
+    f_new: f + (gamma * reverse a[til k]);
+    f: f_new, enlist gamma;
+    
+    k: k + 1
+  ];
+  f
+ };
+
 \d .
