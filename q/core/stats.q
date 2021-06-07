@@ -198,4 +198,88 @@ kendallTau: {[x; y]
   (1f * (concordant - discordant)) % total_pairs
  };
 
+/ Vectorized empirical quantile: linear interpolation at probability p in [0, 1]
+quantile: {[x; p]
+  n: count x;
+  if[n == 0; :0f];
+  xs: asc x;
+  pos: p * (n - 1);
+  i: `long$floor pos;
+  if[i >= n - 1; :last xs];
+  frac: pos - i;
+  (xs[i] * (1f - frac)) + (xs[i + 1] * frac)
+ };
+
+/ Interquartile range (IQR)
+iqr: {[x]
+  quantile[x; 0.75] - quantile[x; 0.25]
+ };
+
+/ Silverman's rule of thumb bandwidth selector for KDE
+bandwidthSilverman: {[x]
+  n: count x;
+  s: std[x];
+  q_diff: iqr[x] % 1.34;
+  spread: $[q_diff > 0f; min (s; q_diff); s];
+  0.9 * spread * (exp[neg 0.2 * log[1f * n]])
+ };
+
+/ Scott's normal reference bandwidth selector
+bandwidthScott: {[x]
+  n: count x;
+  1.06 * std[x] * (exp[neg 0.2 * log[1f * n]])
+ };
+
+/ Standard Gaussian kernel
+kernelGaussian: {[u]
+  .math.normalPdf[u]
+ };
+
+/ Epanechnikov parabolic optimal MSE kernel: 0.75 * (1 - u^2) for |u| <= 1
+kernelEpanechnikov: {[u]
+  ?[abs[u] <= 1f; 0.75 * (1f - (u * u)); 0f]
+ };
+
+/ Biweight (quartic) kernel: (15/16) * (1 - u^2)^2 for |u| <= 1
+kernelBiweight: {[u]
+  ?[abs[u] <= 1f; 0.9375 * (1f - (u * u)) * (1f - (u * u)); 0f]
+ };
+
+/ Vectorized Kernel Density Estimation over evaluation grid
+/ x: data samples; grid: evaluation points; h: bandwidth; kType: kernel function
+kde: {[x; grid; h; kType]
+  n: count x;
+  inv_nh: 1f % (1f * n * h);
+  {inv_nh * sum kType[(x - y) % h]}[; x] each grid
+ };
+
+/ Pseudo-random standard normal deviates via Box-Muller transform
+randn: {[n]
+  half_n: `long$ceil 0.5 * n;
+  u1: half_n ? 1f;
+  u2: half_n ? 1f;
+  / Guard against zero in log
+  u1: max'[u1; 1e-12];
+  r: sqrt[-2f * log[u1]];
+  theta: .math.TWO_PI * u2;
+  z1: r * cos[theta];
+  z2: r * sin[theta];
+  n # raze (z1; z2)
+ };
+
+/ Multivariate normal deviate generation given mean vector mu and covariance matrix Sigma
+randMvn: {[n; mu; Sigma]
+  d: count mu;
+  L: .la.cholesky[Sigma];
+  samples: ();
+  i: 0;
+  while[i < n;
+    z: randn[d];
+    x: mu + .la.matVec[L; z];
+    samples: samples, enlist x;
+    i: i + 1
+  ];
+  samples
+ };
+
 \d .
