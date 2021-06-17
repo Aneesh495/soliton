@@ -146,4 +146,200 @@ bfgs: {[f; x0; max_iter; tol]
   `x`fval`grad`iterations`converged!(x; fx; g; iter; converged)
  };
 
+/ Nelder-Mead downhill simplex algorithm for derivative-free optimization
+nelderMead: {[f; x0; max_iter; tol]
+  n: count x0;
+  alpha: 1.0;
+  gamma: 2.0;
+  rho: 0.5;
+  sigma: 0.5;
+  
+  / Initialize simplex vertices with n + 1 points
+  simplex: enlist x0;
+  i: 0;
+  while[i < n;
+    vertex: x0;
+    step: $[abs[x0[i]] > 0f; 0.05 * x0[i]; 0.00025];
+    vertex[i]: vertex[i] + step;
+    simplex: simplex, enlist vertex;
+    i: i + 1
+  ];
+  
+  fvals: f each simplex;
+  iter: 0;
+  max_it: $[max_iter < 10; 200; max_iter];
+  
+  while[iter < max_it;
+    / Sort vertices by function value
+    order: iasc fvals;
+    simplex: simplex[order];
+    fvals: fvals[order];
+    
+    / Check termination tolerance
+    diff: max abs fvals - first fvals;
+    if[diff < tol; iter: 9999];
+    
+    / Centroid of best n vertices
+    best_n: n # simplex;
+    centroid: (sum best_n) % (1f * n);
+    
+    / Reflection step
+    x_worst: last simplex;
+    f_worst: last fvals;
+    x_refl: centroid + (alpha * (centroid - x_worst));
+    f_refl: f[x_refl];
+    
+    if[(f_refl >= fvals[0]) and (f_refl < fvals[n - 1]);
+      simplex[n]: x_refl;
+      fvals[n]: f_refl
+    ;
+      if[f_refl < fvals[0];
+        / Expansion step
+        x_exp: centroid + (gamma * (x_refl - centroid));
+        f_exp: f[x_exp];
+        if[f_exp < f_refl;
+          simplex[n]: x_exp; fvals[n]: f_exp
+        ;
+          simplex[n]: x_refl; fvals[n]: f_refl
+        ]
+      ;
+        / Contraction step
+        if[f_refl < f_worst;
+          / Outside contraction
+          x_cont: centroid + (rho * (x_refl - centroid));
+          f_cont: f[x_cont];
+          if[f_cont <= f_refl;
+            simplex[n]: x_cont; fvals[n]: f_cont
+          ;
+            / Shrink simplex
+            k: 1;
+            while[k <= n;
+              simplex[k]: simplex[0] + (sigma * (simplex[k] - simplex[0]));
+              fvals[k]: f[simplex[k]];
+              k: k + 1
+            ]
+          ]
+        ;
+          / Inside contraction
+          x_cont: centroid - (rho * (centroid - x_worst));
+          f_cont: f[x_cont];
+          if[f_cont < f_worst;
+            simplex[n]: x_cont; fvals[n]: f_cont
+          ;
+            / Shrink simplex
+            k: 1;
+            while[k <= n;
+              simplex[k]: simplex[0] + (sigma * (simplex[k] - simplex[0]));
+              fvals[k]: f[simplex[k]];
+              k: k + 1
+            ]
+          ]
+        ]
+      ]
+    ];
+    iter: iter + 1
+  ];
+  `x`fval`iterations!(first simplex; first fvals; iter)
+ };
+
+/ Numerical Jacobian of vector residual function r(x)
+jacobian: {[res_fn; x]
+  r0: res_fn[x];
+  m: count r0;
+  n: count x;
+  h_base: 1.4901161193847656e-8;
+  J_cols: ();
+  
+  j: 0;
+  while[j < n;
+    hj: h_base * max (1f; abs[x[j]]);
+    xp: x; xm: x;
+    xp[j]: xp[j] + hj;
+    xm[j]: xm[j] - hj;
+    col: (res_fn[xp] - res_fn[xm]) % (2f * hj);
+    J_cols: J_cols, enlist col;
+    j: j + 1
+  ];
+  flip J_cols
+ };
+
+/ Levenberg-Marquardt nonlinear least squares algorithm
+/ Solves min 0.5 * ||r(x)||^2 via adaptive damping (J^T * J + lambda * I) * delta = -J^T * r
+levenbergMarquardt: {[res_fn; x0; max_iter; tol]
+  x: x0;
+  r: res_fn[x];
+  cost: 0.5 * sum r * r;
+  lambda: 1e-3;
+  
+  iter: 0;
+  max_it: $[max_iter < 10; 100; max_iter];
+  converged: false;
+  
+  while[(iter < max_it) and not converged;
+    J: jacobian[res_fn; x];
+    Jt: flip J;
+    JtJ: .la.matMul[Jt; J];
+    grad_cost: .la.matVec[Jt; r];
+    
+    if[.la.norm2[grad_cost] < tol;
+      converged: true
+    ;
+      n: count x;
+      / Damped normal equations: (J^T * J + lambda * diag(J^T * J)) * delta = -grad
+      A: JtJ;
+      d: .la.diag[JtJ];
+      i: 0;
+      while[i < n;
+        A[i; i]: A[i; i] + (lambda * max (1e-6; d[i]));
+        i: i + 1
+      ];
+      
+      delta: .la.solve[A; neg grad_cost];
+      x_trial: x + delta;
+      r_trial: res_fn[x_trial];
+      cost_trial: 0.5 * sum r_trial * r_trial;
+      
+      if[cost_trial < cost;
+        / Successful step: decrease damping
+        x: x_trial;
+        r: r_trial;
+        cost: cost_trial;
+        lambda: max (1e-7; lambda * 0.1);
+        if[abs[cost - cost_trial] < (tol * cost); converged: true]
+      ;
+        / Unsuccessful step: increase damping
+        lambda: min (1e7; lambda * 10f)
+      ];
+      iter: iter + 1
+    ]
+  ];
+  `x`cost`iterations`converged!(x; cost; iter; converged)
+ };
+
+/ Projected gradient descent under box constraints lower <= x <= upper
+projectedGradientDescent: {[f; x0; lower; upper; max_iter; tol]
+  x: min'[upper; max'[lower; x0]];
+  fx: f[x];
+  alpha: 0.1;
+  iter: 0;
+  max_it: $[max_iter < 10; 100; max_iter];
+  
+  while[iter < max_it;
+    g: grad[f; x];
+    x_trial: min'[upper; max'[lower; x - (alpha * g)]];
+    fx_trial: f[x_trial];
+    
+    if[fx_trial < fx;
+      if[abs[fx - fx_trial] < tol; iter: 9999];
+      x: x_trial;
+      fx: fx_trial;
+      alpha: min (1.0; alpha * 1.1)
+    ;
+      alpha: alpha * 0.5
+    ];
+    iter: iter + 1
+  ];
+  `x`fval`iterations!(x; fx; iter)
+ };
+
 \d .
