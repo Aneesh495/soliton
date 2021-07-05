@@ -138,4 +138,136 @@ stoikovMicroPrice: {[book]
   bbo[`midPrice] + (0.5 * imb * bbo`spread)
  };
 
+/ Volume-Synchronized Probability of Toxicity (VPIN): Easley, Lopez de Prado, O'Hara (2012)
+/ trades: table with columns `price`size
+/ bucket_vol: volume threshold per synchronized bucket V
+/ n_buckets: rolling window length of buckets N
+computeVPIN: {[trades; bucket_vol; n_buckets]
+  prices: trades`price;
+  sizes: trades`size;
+  n: count trades;
+  if[n < 2; :`vpin`buckets!(0f; ())];
+  
+  / Price changes and standard deviation for Bulk Volume Classification (BVC)
+  dp: 0.0, 1 _ (prices - prev prices);
+  sigma: .stats.std[dp];
+  if[sigma == 0f; sigma: 1e-6];
+  
+  / Probability of buy trade via normal CDF of standardized price movement
+  p_buy: .math.normalCdf each dp % sigma;
+  
+  / Accumulate into constant volume buckets
+  buy_vols: ();
+  sell_vols: ();
+  
+  curr_b: 0f;
+  curr_s: 0f;
+  rem_bucket: bucket_vol;
+  
+  i: 0;
+  while[i < n;
+    trade_sz: sizes[i];
+    pb: p_buy[i];
+    
+    while[trade_sz > 0f;
+      alloc: min (trade_sz; rem_bucket);
+      curr_b: curr_b + (alloc * pb);
+      curr_s: curr_s + (alloc * (1f - pb));
+      rem_bucket: rem_bucket - alloc;
+      trade_sz: trade_sz - alloc;
+      
+      if[rem_bucket <= 1e-6;
+        buy_vols: buy_vols, enlist curr_b;
+        sell_vols: sell_vols, enlist curr_s;
+        curr_b: 0f;
+        curr_s: 0f;
+        rem_bucket: bucket_vol
+      ]
+    ];
+    i: i + 1
+  ];
+  
+  tot_buckets: count buy_vols;
+  if[tot_buckets < n_buckets;
+    abs_imbalance: abs buy_vols - sell_vols;
+    vpin_val: (sum abs_imbalance) % (tot_buckets * bucket_vol);
+    :`vpin`bucketCount!(vpin_val; tot_buckets)
+  ];
+  
+  / Rolling VPIN over last n_buckets
+  recent_b: (neg n_buckets) # buy_vols;
+  recent_s: (neg n_buckets) # sell_vols;
+  abs_imb: abs recent_b - recent_s;
+  vpin: (sum abs_imb) % (1f * n_buckets * bucket_vol);
+  `vpin`bucketCount!(vpin; tot_buckets)
+ };
+
+/ Multi-Level Order Flow Imbalance (OFI): Cont, Kukanov, Stoikov (2014)
+/ Computes net order flow across top K price levels between snapshots t-1 and t
+/ prev_book, curr_book: dictionaries with `bids and `asks tables
+computeOFI: {[prev_book; curr_book; k_levels]
+  p_prev: getDepth[prev_book; k_levels];
+  p_curr: getDepth[curr_book; k_levels];
+  
+  ofi_levels: ();
+  lvl: 0;
+  while[lvl < k_levels;
+    / Bid side innovation
+    pb_curr: p_curr[`bids; lvl; `price];
+    vb_curr: p_curr[`bids; lvl; `size];
+    pb_prev: p_prev[`bids; lvl; `price];
+    vb_prev: p_prev[`bids; lvl; `size];
+    
+    delta_bid: $[pb_curr > pb_prev; vb_curr;
+                 pb_curr == pb_prev; vb_curr - vb_prev;
+                 neg vb_prev];
+    
+    / Ask side innovation
+    pa_curr: p_curr[`asks; lvl; `price];
+    va_curr: p_curr[`asks; lvl; `size];
+    pa_prev: p_prev[`asks; lvl; `price];
+    va_prev: p_prev[`asks; lvl; `size];
+    
+    delta_ask: $[pa_curr < pa_prev; va_curr;
+                 pa_curr == pa_prev; va_curr - va_prev;
+                 neg va_prev];
+    
+    ofi_k: delta_bid - delta_ask;
+    ofi_levels: ofi_levels, enlist ofi_k;
+    lvl: lvl + 1
+  ];
+  `ofiTotal`ofiByLevel!(sum ofi_levels; ofi_levels)
+ };
+
+/ Roll (1984) effective spread estimator: S = 2 * sqrt(-Cov(Delta p_t, Delta p_{t-1}))
+rollSpread: {[prices]
+  n: count prices;
+  if[n < 3; :0f];
+  dp: 1 _ (prices - prev prices);
+  dp_t: 1 _ dp;
+  dp_tm1: -1 _ dp;
+  cov: (sum (dp_t - .stats.mean[dp_t]) * (dp_tm1 - .stats.mean[dp_tm1])) % (count dp_t - 1);
+  $[cov < 0f; 2f * sqrt[neg cov]; 0f]
+ };
+
+/ Glosten-Milgrom (1985) information asymmetry spread decomposition
+/ S = alpha * S + c * S where alpha is adverse selection share and c is order processing share
+glostenMilgromDecomp: {[prices; trades_direction; horizon]
+  / trades_direction: +1 for buyer-initiated, -1 for seller-initiated
+  n: count prices;
+  if[n <= horizon; :`adverseSelectionShare`orderHandlingShare!(0.5; 0.5)];
+  
+  dp_ahead: (horizon _ prices) - (neg horizon) _ prices;
+  q_t: (neg horizon) _ trades_direction;
+  
+  / Regress forward price change on trade sign: Delta p_{t+k} = theta * q_t + epsilon
+  cov_pq: (sum dp_ahead * q_t) % (count dp_ahead);
+  var_q: (sum q_t * q_t) % (count q_t);
+  theta: cov_pq % var_q;
+  
+  half_spread: 0.5 * .stats.mean[abs 1 _ (prices - prev prices)];
+  alpha: $[half_spread > 0f; min (1.0; max (0.0; theta % half_spread)); 0.5];
+  `adverseSelectionShare`orderHandlingShare!(alpha; 1f - alpha)
+ };
+
 \d .
