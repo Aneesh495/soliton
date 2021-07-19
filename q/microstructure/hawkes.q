@@ -31,7 +31,7 @@ evalIntensity: {[model; r_state]
   alpha: model`alpha;
   
   / lambda_i = mu_i + sum_j (alpha_ij * R_ij)
-  lambdas: n # 0f;
+  lambdas: m # 0f;
   i: 0;
   while[i < m;
     lambdas[i]: mu[i] + sum alpha[i] * r_state[i];
@@ -106,6 +106,104 @@ simulateOgata: {[model; t_max; max_events]
     ]
   ];
   `times`types`count!(event_times; event_types; n_ev)
+ };
+
+/ Ozaki (1979) linear time O(N) recursive log-likelihood calculation
+/ times: sorted arrival times [N]
+/ types: integer event dimension tags [N] in {0, ..., M-1}
+/ t_end: observation horizon T
+logLikelihood: {[model; times; types; t_end]
+  m: model`dim;
+  mu: model`mu;
+  alpha: model`alpha;
+  beta: model`beta;
+  n: count times;
+  if[n == 0; :neg sum mu * t_end];
+  
+  / State R[i; j] for recursive decay
+  r_state: {m # 0f} each til m;
+  
+  log_lik: 0f;
+  last_t: 0f;
+  
+  k: 0;
+  while[k < n;
+    curr_t: times[k];
+    curr_type: types[k];
+    dt: curr_t - last_t;
+    
+    / Decay state to curr_t
+    r_state: {r_state[x] * exp[neg beta[x] * dt]} each til m;
+    
+    / Evaluate intensity for dimension curr_type
+    lambda_k: mu[curr_type] + sum alpha[curr_type] * r_state[curr_type];
+    if[lambda_k <= 0f; lambda_k: 1e-12];
+    log_lik: log_lik + log[lambda_k];
+    
+    / Increment jump in column curr_type
+    i: 0;
+    while[i < m;
+      r_state[i; curr_type]: r_state[i; curr_type] + 1f;
+      i: i + 1
+    ];
+    
+    last_t: curr_t;
+    k: k + 1
+  ];
+  
+  / Subtract compensator integral: Lambda_i(T) = mu_i * T + sum_j (alpha_ij / beta_ij) * sum_k (1 - exp(-beta_ij * (T - t_k)))
+  i: 0;
+  while[i < m;
+    log_lik: log_lik - (mu[i] * t_end);
+    j: 0;
+    while[j < m;
+      b: beta[i; j];
+      a: alpha[i; j];
+      j_times: times where types = j;
+      if[count j_times > 0;
+        integrated_kernel: sum 1f - exp[neg b * (t_end - j_times)];
+        log_lik: log_lik - ((a % b) * integrated_kernel)
+      ];
+      j: j + 1
+    ];
+    i: i + 1
+  ];
+  log_lik
+ };
+
+/ Maximum Likelihood Estimation (MLE) of 1D univariate Hawkes process parameters (mu, alpha, beta)
+fitUnivariate: {[times; t_end]
+  n: count times;
+  types: n # 0;
+  
+  / Objective function to minimize: negative log-likelihood
+  obj: {[params; times; types; t_end]
+    / params: [log(mu), log(alpha), log(beta)]
+    mu_val: exp params[0];
+    alpha_val: exp params[1];
+    beta_val: exp params[2];
+    
+    / Enforce stationarity penalty: alpha < beta
+    penalty: $[alpha_val >= (0.999 * beta_val); 1e6 * (alpha_val - beta_val); 0f];
+    
+    m_test: initModel[enlist mu_val; enlist enlist alpha_val; enlist enlist beta_val];
+    ll: logLikelihood[m_test; times; types; t_end];
+    (neg ll) + penalty
+  };
+  
+  / Initial parameter guess based on empirical event rate
+  mean_rate: (1f * n) % t_end;
+  init_params: (log[0.5 * mean_rate]; log[0.3 * mean_rate]; log[1.0]);
+  
+  opt_res: .optim.nelderMead[obj[; times; types; t_end]; init_params; 150; 1e-5];
+  best_params: exp opt_res`x;
+  
+  mu_hat: best_params[0];
+  alpha_hat: best_params[1];
+  beta_hat: best_params[2];
+  
+  branching_ratio: alpha_hat % beta_hat;
+  initModel[enlist mu_hat; enlist enlist alpha_hat; enlist enlist beta_hat]
  };
 
 \d .
