@@ -202,8 +202,79 @@ fitUnivariate: {[times; t_end]
   alpha_hat: best_params[1];
   beta_hat: best_params[2];
   
-  branching_ratio: alpha_hat % beta_hat;
   initModel[enlist mu_hat; enlist enlist alpha_hat; enlist enlist beta_hat]
+ };
+
+/ Time-change theorem residual diagnostics: transforms event times into Unit Exponential variates
+/ Lambda(t_k) - Lambda(t_{k-1}) ~ Exp(1) under correct model specification
+computeResiduals: {[model; times; types]
+  m: model`dim;
+  mu: model`mu;
+  alpha: model`alpha;
+  beta: model`beta;
+  n: count times;
+  if[n < 2; :`residuals`uniformResiduals!((); ())];
+  
+  r_state: {m # 0f} each til m;
+  residuals: ();
+  
+  last_t: 0f;
+  k: 0;
+  while[k < n;
+    curr_t: times[k];
+    curr_type: types[k];
+    dt: curr_t - last_t;
+    
+    / Integrated intensity delta over [last_t, curr_t]
+    delta_lambda: mu[curr_type] * dt;
+    j: 0;
+    while[j < m;
+      b: beta[curr_type; j];
+      a: alpha[curr_type; j];
+      if[b > 0f;
+        decay_factor: (1f - exp[neg b * dt]) % b;
+        delta_lambda: delta_lambda + (a * r_state[curr_type; j] * decay_factor)
+      ];
+      j: j + 1
+    ];
+    residuals: residuals, enlist delta_lambda;
+    
+    / Advance state
+    r_state: {r_state[x] * exp[neg beta[x] * dt]} each til m;
+    i: 0;
+    while[i < m;
+      r_state[i; curr_type]: r_state[i; curr_type] + 1f;
+      i: i + 1
+    ];
+    
+    last_t: curr_t;
+    k: k + 1
+  ];
+  
+  / Transform to uniform U_k = 1 - exp(-tau_k)
+  u_residuals: 1f - exp[neg residuals];
+  `residuals`uniformResiduals!(residuals; u_residuals)
+ };
+
+/ Kolmogorov-Smirnov test statistic comparing empirical residuals to Uniform(0, 1)
+ksUniformTest: {[u_res]
+  n: count u_res;
+  if[n == 0; :`ksStat`pValue!(0f; 1f)];
+  u_sorted: asc u_res;
+  i_vec: (1f * til n) % (1f * n);
+  ip1_vec: (1f * (1 + til n)) % (1f * n);
+  
+  d_plus: max ip1_vec - u_sorted;
+  d_minus: max u_sorted - i_vec;
+  ks_stat: max (d_plus; d_minus);
+  
+  / Asymptotic p-value calculation via Kolmogorov distribution approximation
+  sqrt_n: sqrt[1f * n];
+  lambda_val: (sqrt_n + 0.12 + (0.11 % sqrt_n)) * ks_stat;
+  / P(K > lambda) = 2 * sum_{j=1}^4 (-1)^{j-1} exp(-2 * j^2 * lambda^2)
+  term1: exp[-2f * lambda_val * lambda_val];
+  p_val: min (1.0; max (0.0; 2f * term1));
+  `ksStat`pValue`isValidFit!(ks_stat; p_val; p_val > 0.05)
  };
 
 \d .
