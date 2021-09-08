@@ -70,4 +70,75 @@ constructGreeksSurface: {[S0; strikes; maturities; r; q; vol_matrix; isCall]
   surface_rows
  };
 
+/ Gatheral's Stochastic Volatility Inspired (SVI) raw total variance:
+/ w(k) = a + b * (rho * (k - m) + sqrt((k - m)^2 + sigma^2))
+/ k = ln(K / F) is log-moneyness
+sviTotalVariance: {[k; a; b; rho; m; sigma]
+  dk: k - m;
+  a + (b * ((rho * dk) + sqrt[(dk * dk) + (sigma * sigma)]))
+ };
+
+/ Convert SVI total variance w(k) into annualized implied Black-Scholes volatility: sigma_BS = sqrt(w(k) / T)
+sviImpliedVol: {[k; T; a; b; rho; m; sigma]
+  w: sviTotalVariance[k; a; b; rho; m; sigma];
+  sqrt[max (1e-6; w % T)]
+ };
+
+/ Verify Durrleman no-arbitrage bounds for SVI parameters
+isSVIArbitrageFree: {[a; b; rho; m; sigma]
+  c1: b >= 0f;
+  c2: abs[rho] < 1f;
+  c3: sigma > 0f;
+  c4: (a + (b * sigma * sqrt[1f - (rho * rho)])) >= 0f;
+  c5: (b * (1f + abs[rho])) < 4f; / Lee's moment formula bound for total variance slope
+  c1 and c2 and c3 and c4 and c5
+ };
+
+/ Parametric Gaussian Value-at-Risk (VaR)
+varParametric: {[returns; alpha_conf]
+  mu: .stats.mean[returns];
+  s: .stats.std[returns];
+  z: .math.normalInv[1f - alpha_conf];
+  neg (mu + (s * z))
+ };
+
+/ Cornish-Fisher expansion Value-at-Risk adjusting for skewness and excess kurtosis
+varCornishFisher: {[returns; alpha_conf]
+  mu: .stats.mean[returns];
+  s: .stats.std[returns];
+  sk: .stats.skew[returns];
+  kt: .stats.kurt[returns];
+  
+  z: .math.normalInv[1f - alpha_conf];
+  z2: z * z;
+  z3: z2 * z;
+  
+  / Cornish-Fisher expansion quantile
+  z_cf: z + ((z2 - 1f) * sk % 6f) + ((z3 - (3f * z)) * kt % 24f) - (((2f * z3) - (5f * z)) * sk * sk % 36f);
+  neg (mu + (s * z_cf))
+ };
+
+/ Historical simulation Value-at-Risk
+varHistorical: {[returns; alpha_conf]
+  p_tail: 1f - alpha_conf;
+  neg .stats.quantile[returns; p_tail]
+ };
+
+/ Coherent Expected Shortfall (CVaR): average loss beyond VaR threshold
+expectedShortfall: {[returns; alpha_conf]
+  var_thresh: varHistorical[returns; alpha_conf];
+  losses: neg returns;
+  tail_losses: losses where losses >= var_thresh;
+  $[count tail_losses > 0; .stats.mean[tail_losses]; var_thresh]
+ };
+
+/ Euler Marginal Risk Contributions for a multi-asset portfolio with weights w and covariance Sigma
+/ MRC_i = (Sigma * w)_i / sqrt(w^T * Sigma * w)
+marginalRiskContribution: {[weights; Sigma]
+  port_var: sum weights * .la.matVec[Sigma; weights];
+  port_std: sqrt[max (1e-12; port_var)];
+  cov_w: .la.matVec[Sigma; weights];
+  cov_w % port_std
+ };
+
 \d .
